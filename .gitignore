@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.pages-test-root/
+*.log
+.DS_Store
