@@ -12,6 +12,9 @@ export const ASSETS = {
   rockLarge: 'RockPlatforms_Large', rockTall: 'RockPlatform_Tall', tree: 'Tree',
   bush: 'Bush', cloud1: 'Cloud_1', cloud2: 'Cloud_2', cloud3: 'Cloud_3',
   chest: 'Chest', stairs: 'Stairs', grassCube: 'Cube_Grass_Single',
+  brickCube: 'Cube_Bricks', cannon: 'Cannon', door: 'Door',
+  pipeStraight: 'Pipe_Straight', pipe90: 'Pipe_90',
+  hazardCylinder: 'Hazard_Cylinder', spikyBall: 'SpikyBall',
 } as const;
 
 export type AssetId = keyof typeof ASSETS;

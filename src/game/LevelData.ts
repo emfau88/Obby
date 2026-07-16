@@ -1,10 +1,32 @@
 import type { AssetId } from './AssetManager';
 
 export type Vec3 = [number, number, number];
-export type MovingPlatformDef = { axis: 'x' | 'z'; distance: number; speed: number };
+export type MovingPlatformDef = {
+  axis: 'x' | 'y' | 'z';
+  distance: number;
+  speed: number;
+  phase?: number;
+};
+export type LauncherDef = {
+  id: string;
+  pos: Vec3;
+  target: Vec3;
+  flightTime: number;
+  visual: 'bouncer' | 'cannon';
+  rotY?: number;
+  message?: string;
+};
+export type RotatorDef = {
+  id: string;
+  pos: Vec3;
+  radius: number;
+  speed: number;
+  arms?: number;
+  color?: number;
+};
 export type PlatformDef = {
   id: string; pos: Vec3; size: Vec3;
-  visual: 'grass' | 'rock' | 'bridge'; asset?: AssetId; moving?: MovingPlatformDef;
+  visual: 'grass' | 'rock' | 'bridge' | 'brick'; asset?: AssetId; moving?: MovingPlatformDef;
   collision?: boolean; act?: 1 | 2 | 3;
 };
 export type CollisionSurfaceDef = { id: string; pos: Vec3; size: Vec3 };
@@ -32,7 +54,8 @@ export type LevelDefinition = {
   platforms: PlatformDef[];
   collisionSurfaces: CollisionSurfaceDef[];
   coins: Vec3[];
-  bouncer: { pos: Vec3; target: Vec3; flightTime: number };
+  launchers: LauncherDef[];
+  rotators: RotatorDef[];
   spikes: Vec3[];
   saws: Vec3[];
   checkpoints: Array<{ pos: Vec3; respawn: Vec3 }>;
@@ -41,6 +64,7 @@ export type LevelDefinition = {
   props: PropDef[];
   bonusBeacons: Vec3[];
   criticalRoute: string[];
+  camera?: { height: number; distance: number; lookAhead: number; focusHeight: number };
 };
 
 const cloudtopRun: LevelDefinition = {
@@ -93,7 +117,11 @@ const cloudtopRun: LevelDefinition = {
     [0,6.3,-83],[0,6.3,-91],[-9.5,7.4,-97],[-9.5,8.1,-106],[-2.5,6.3,-110],
     [0,6.3,-124],[0,7,-150],[0,6.8,-166],[0,8.2,-181],
   ],
-  bouncer: { pos: [0,1.15,-46], target: [2.5,3,-54], flightTime: .92 },
+  launchers: [{
+    id: 'garden-bouncer', pos: [0,1.15,-46], target: [2.5,3,-54], flightTime: .92,
+    visual: 'bouncer', message: 'Super bounce!',
+  }],
+  rotators: [],
   spikes: [[-5,5.1,-103],[-2.5,5.1,-103],[2.5,5.1,-103],[5,5.1,-103],[-5,5.1,-109],[0,5.1,-109],[5,5.1,-109]],
   saws: [[-3.5,5.2,-85],[3.5,5.2,-89]],
   checkpoints: [
@@ -126,76 +154,85 @@ const sunsetSpires: LevelDefinition = {
   id: 'sunset-spires',
   number: 2,
   title: 'Sunset Spires',
-  subtitle: 'The Golden Hour Trial',
-  description: 'A faster, tighter route across shifting ruins and the last light of day.',
-  completeTitle: 'Summit Conquered!',
+  subtitle: 'The Clockwork Citadel',
+  description: 'Breach the golden ruins, ride the clockwork lifts and climb beyond the last light.',
+  completeTitle: 'Citadel Conquered!',
   theme: {
-    sky: '#f39a7b', fog: '#efaa91', hemisphereSky: 0xffd6b8, hemisphereGround: 0x704a62, sun: 0xffdf9a,
+    sky: '#e98772', fog: '#d99382', hemisphereSky: 0xffd2ad, hemisphereGround: 0x493953, sun: 0xffd27d,
   },
-  mastery: { coins: 18, time: 48, falls: 2 },
+  mastery: { coins: 22, time: 68, falls: 2 },
   acts: [
-    { name: 'Breeze Terraces', startZ: 0, color: 0xffd15a },
-    { name: 'Ruin Run', startZ: -65, color: 0xff6f61, gate: { z: -65, y: 5, width: 10.5 } },
-    { name: 'Summit Keep', startZ: -124, color: 0x9a87ff, gate: { z: -124, y: 5, width: 10.5 } },
+    { name: 'Golden Ruins', startZ: 0, color: 0xffcc62 },
+    { name: 'Clockwork Core', startZ: -62, color: 0xff725e, gate: { z: -66, y: 7, width: 13 } },
+    { name: 'Spire Ascent', startZ: -121, color: 0x9b83ff, gate: { z: -123, y: 12, width: 12 } },
   ],
-  start: [0,2,4],
-  finishZ: -171,
+  start: [0,2,5],
+  finishZ: -196,
   platforms: [
-    {id:'start',pos:[0,0,0],size:[16,2,18],visual:'grass',act:1},
-    {id:'terrace',pos:[-3,0,-15],size:[10,2,10],visual:'grass',act:1},
-    {id:'bridge',pos:[0,.25,-26],size:[5,1.5,12],visual:'bridge',asset:'bridgeSmall',act:1},
-    {id:'bouncer',pos:[0,0,-38],size:[11,2,10],visual:'grass',act:1},
-    {id:'rock-a',pos:[-3,2,-50],size:[8,2,8],visual:'rock',asset:'rockTall',act:1},
-    {id:'rock-b',pos:[2.5,3,-60],size:[8,2,8],visual:'rock',asset:'rock2',act:1},
-    {id:'ruins',pos:[0,4,-73],size:[15,2,14],visual:'grass',act:2},
-    {id:'moving',pos:[0,4.25,-88],size:[9.5,1.5,9.5],visual:'rock',asset:'rockLarge',moving:{axis:'x',distance:3,speed:.95},act:2},
-    {id:'mid',pos:[0,4,-102],size:[14,2,11],visual:'grass',act:2},
-    {id:'hazard',pos:[0,4,-116],size:[16,2,13],visual:'grass',act:2},
-    {id:'bonus-rock-a',pos:[9.5,5,-112],size:[5.5,2,5.5],visual:'rock',asset:'rock3',act:2},
-    {id:'bonus-rock-b',pos:[9.5,5.6,-120],size:[5.5,2,5.5],visual:'rock',asset:'rockLarge',act:2},
-    {id:'checkpoint',pos:[0,4,-130],size:[12,2,9],visual:'grass',act:3},
-    {id:'landing',pos:[0,4,-143],size:[14,2,10],visual:'grass',act:3},
-    {id:'stairs',pos:[0,5.5,-154],size:[8,3,12],visual:'bridge',asset:'stairs',collision:false,act:3},
-    {id:'castle',pos:[0,5.5,-169],size:[20,3,20],visual:'grass',act:3},
+    {id:'start',pos:[0,0,0],size:[18,2,18],visual:'brick',act:1},
+    {id:'lower-west',pos:[-4,1,-17],size:[10,2,9],visual:'brick',act:1},
+    {id:'lower-east',pos:[4,2,-29],size:[9,2,9],visual:'brick',act:1},
+    {id:'launcher-deck',pos:[4,2,-41],size:[11,2,10],visual:'brick',act:1},
+    {id:'arrival-balcony',pos:[-7,6,-56],size:[12,2,10],visual:'brick',act:1},
+    {id:'archway',pos:[-4,6,-68],size:[11,2,8],visual:'brick',act:2},
+    {id:'clockwork-floor',pos:[0,6,-82],size:[20,2,18],visual:'brick',act:2},
+    {id:'lift-approach',pos:[7,7,-96],size:[8,2,8],visual:'brick',act:2},
+    {id:'lift-one',pos:[7,9,-107],size:[7,1.5,7],visual:'brick',moving:{axis:'y',distance:2,speed:.72,phase:-1.5708},act:2},
+    {id:'upper-gallery',pos:[7,11,-118],size:[11,2,10],visual:'brick',act:2},
+    {id:'spire-step',pos:[1,12.5,-130],size:[9,2,8],visual:'brick',act:3},
+    {id:'bonus-balcony',pos:[-9,12.8,-130],size:[6,2,6],visual:'rock',asset:'rock3',act:3},
+    {id:'spinner-terrace',pos:[-6,13,-141],size:[16,2,13],visual:'brick',act:3},
+    {id:'final-approach',pos:[3,14,-153],size:[8,2,8],visual:'brick',act:3},
+    {id:'lift-two',pos:[3,16.5,-164],size:[7,1.5,7],visual:'brick',moving:{axis:'y',distance:2,speed:.78,phase:-1.5708},act:3},
+    {id:'summit',pos:[0,18,-178],size:[18,2,18],visual:'brick',act:3},
+    {id:'crown',pos:[0,19,-194],size:[10,2,8],visual:'brick',act:3},
   ],
-  collisionSurfaces: [
-    {id:'stair-1',pos:[0,5.2,-149.2],size:[8,.4,2.4]},
-    {id:'stair-2',pos:[0,5.4,-151.6],size:[8,.8,2.4]},
-    {id:'stair-3',pos:[0,5.6,-154],size:[8,1.2,2.4]},
-    {id:'stair-4',pos:[0,5.8,-156.4],size:[8,1.6,2.4]},
-    {id:'stair-5',pos:[0,6,-158.8],size:[8,2,2.4]},
-  ],
+  collisionSurfaces: [],
   coins: [
-    [0,2.2,-4],[-1.5,2.2,-9],[-3,2.2,-15],[-1,2.2,-20],[0,2.2,-25],[0,2.2,-30],
-    [0,2.3,-37],[0,2.4,-42],[-3,4.3,-50],[2.5,5.3,-60],[0,6.3,-68],[0,6.3,-78],
-    [0,6.3,-86],[0,6.3,-92],[0,6.3,-101],[9.5,7.2,-112],[9.5,7.8,-120],[-2.5,6.3,-118],
-    [0,6.4,-143],[0,8.2,-169],
+    [0,2.2,-5],[-2,2.5,-12],[-4,3.2,-17],[0,3.6,-24],[4,4.2,-29],[4,4.2,-36],
+    [4,4.2,-42],[1,6.2,-48],[-3,8,-52],[-7,8.2,-56],[-4,8.2,-67],[-5,8.2,-76],
+    [-2,8.2,-82],[2,8.2,-82],[6,8.2,-86],[7,9.2,-96],[7,10.4,-107],[7,13.2,-118],
+    [2,14.7,-129],[-9,15,-130],[-6,15.2,-137],[-6,15.2,-144],[1,16.2,-152],[3,17.2,-164],
+    [0,20.2,-176],[0,21.2,-194],
   ],
-  bouncer: { pos: [0,1.15,-41], target: [-3,3,-50], flightTime: .9 },
-  spikes: [[-5,5.1,-113],[-2.5,5.1,-113],[2.5,5.1,-113],[5,5.1,-113],[-5,5.1,-119],[0,5.1,-119],[5,5.1,-119]],
-  saws: [[-3.5,5.2,-71],[3.5,5.2,-76]],
+  launchers: [{
+    id: 'ruin-cannon', pos: [4,3.15,-43], target: [-7,7,-56], flightTime: 1.05,
+    visual: 'cannon', rotY: -2.4, message: 'Citadel launch!',
+  }],
+  rotators: [
+    {id:'core-sweep',pos:[0,8,-82],radius:7.3,speed:1.08,arms:2,color:0xffb64c},
+    {id:'spire-sweep',pos:[-6,15,-141],radius:5.8,speed:-1.32,arms:3,color:0x9b83ff},
+  ],
+  spikes: [],
+  saws: [],
   checkpoints: [
-    {pos:[0,1.1,-37],respawn:[0,2,-37]},
-    {pos:[0,5.1,-130],respawn:[0,6,-130]},
-    {pos:[0,5.1,-143],respawn:[0,6,-143]},
+    {pos:[2.5,3.1,-38.5],respawn:[4,3,-38]},
+    {pos:[-7,7.1,-56],respawn:[-7,7,-56]},
+    {pos:[7,12.1,-118],respawn:[7,12,-118]},
+    {pos:[3,15.1,-153],respawn:[3,15,-153]},
   ],
-  finish: [0,7,-171],
+  finish: [0,20,-194],
   tutorials: [
-    {id:'pace',z:-10,text:'Sunset Spires rewards clean momentum'},
-    {id:'bounce',z:-34,text:'Trust the bouncer and steer into the landing'},
-    {id:'saws',z:-66,text:'The center line is safest between the saws'},
-    {id:'bonus',z:-106,text:'Golden side rocks hold two mastery coins'},
-    {id:'spikes',z:-110,text:'Watch the warning glow — cross when the spikes retract'},
-    {id:'summit',z:-125,text:'One final climb to the summit keep'},
+    {id:'ruins',z:-10,text:'The Citadel climbs upward — read the next landing'},
+    {id:'cannon',z:-32,text:'Step into the cannon and keep steering toward the balcony'},
+    {id:'clockwork',z:-68,text:'Follow the sweep, then cut across the clockwork floor'},
+    {id:'lift-one',z:-94,text:'Board the lift low and jump when it reaches the gallery'},
+    {id:'bonus',z:-123,text:'The outer rock holds a risky mastery coin'},
+    {id:'spire',z:-135,text:'Use the quiet space near the hub to read the three arms'},
+    {id:'summit',z:-170,text:'One clean final jump reaches the crown'},
   ],
   props: [
-    {asset:'tree',pos:[-6,1,-2],height:5.5,rotY:.5},{asset:'tree',pos:[4,1,-14],height:4.8,rotY:-.4},
-    {asset:'bush',pos:[5,1,-2],height:1.7},{asset:'bush',pos:[-6,1,-17],height:1.6},
-    {asset:'rockTall',pos:[-11,5,-103],height:6.5,rotY:.3},{asset:'tree',pos:[-5,5,-130],height:4.4},
-    {asset:'tower',pos:[0,7,-175],height:11},{asset:'chest',pos:[-5,7,-170],height:2.2,rotY:.45},
+    {asset:'door',pos:[-4,7,-71],height:5.8,rotY:0},
+    {asset:'pipeStraight',pos:[-9,7,-81],height:5.5,rotY:.2},{asset:'pipe90',pos:[9,7,-84],height:4.2,rotY:-.8},
+    {asset:'tower',pos:[-18,7,-111],height:18,rotY:.2},{asset:'tower',pos:[18,13,-145],height:22,rotY:-.3},
+    {asset:'tower',pos:[0,20,-202],height:17},{asset:'chest',pos:[-3,20,-194],height:2.2,rotY:.45},
   ],
-  bonusBeacons: [[7.2,7.2,-108],[8.5,7.65,-112],[9.8,8.1,-116]],
-  criticalRoute: ['start','terrace','bridge','bouncer','rock-a','rock-b','ruins','moving','mid','hazard','checkpoint','landing'],
+  bonusBeacons: [[-3.8,14.8,-128],[-6.2,15,-129],[-8.5,15.2,-130]],
+  criticalRoute: [
+    'start','lower-west','lower-east','launcher-deck','arrival-balcony','archway','clockwork-floor',
+    'lift-approach','lift-one','upper-gallery','spire-step','spinner-terrace','final-approach','lift-two','summit','crown',
+  ],
+  camera: { height: 7.1, distance: 10.1, lookAhead: 7.3, focusHeight: 1.35 },
 };
 
 export const LEVELS = [cloudtopRun, sunsetSpires] as const;
@@ -205,4 +242,6 @@ export function getLevel(id: string | null | undefined) {
   return cloudtopRun;
 }
 
-export const levelData = getLevel(new URLSearchParams(location.search).get('level'));
+export const levelData = getLevel(
+  typeof location === 'undefined' ? undefined : new URLSearchParams(location.search).get('level'),
+);

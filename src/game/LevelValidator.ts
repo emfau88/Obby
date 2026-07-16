@@ -25,8 +25,20 @@ export function validateLevelData() {
       issues.push(`critical route surface missing near "${criticalRoute[index]}"`);
       continue;
     }
-    const gap = forwardGap(from, to);
+    const launched = levelData.launchers.some(launcher => (
+      surfaceContainsXZ(from, launcher.pos) && surfaceContainsXZ(to, launcher.target)
+    ));
+    if (launched) continue;
+    const gap = planarGap(from, to);
     if (gap > safeGap) issues.push(`critical gap ${from.id} → ${to.id} is ${gap.toFixed(2)}m`);
+    const fromPlatform = levelData.platforms.find(platform => platform.id === from.id);
+    const toPlatform = levelData.platforms.find(platform => platform.id === to.id);
+    const fromTravel = fromPlatform?.moving?.axis === 'y' ? fromPlatform.moving.distance : 0;
+    const toTravel = toPlatform?.moving?.axis === 'y' ? toPlatform.moving.distance : 0;
+    const climb = top(to) - toTravel - (top(from) + fromTravel);
+    if (climb > JUMP_METRICS.height * .92) {
+      issues.push(`critical climb ${from.id} → ${to.id} is ${climb.toFixed(2)}m`);
+    }
   }
 
   const landing = surfaces.find(surface => surface.id === 'landing');
@@ -55,8 +67,19 @@ function forwardGap(from: Surface, to: Surface) {
   return Math.max(0, Math.abs(to.pos[2] - from.pos[2]) - from.size[2] / 2 - to.size[2] / 2);
 }
 
+function planarGap(from: Surface, to: Surface) {
+  const gapX = Math.max(0, Math.abs(to.pos[0] - from.pos[0]) - from.size[0] / 2 - to.size[0] / 2);
+  const gapZ = forwardGap(from, to);
+  return Math.hypot(gapX, gapZ);
+}
+
 function top(surface: Surface) {
   return surface.pos[1] + surface.size[1] / 2;
+}
+
+function surfaceContainsXZ(surface: Surface, position: Vec3) {
+  return Math.abs(position[0] - surface.pos[0]) <= surface.size[0] / 2 + PHYSICS.playerRadius
+    && Math.abs(position[2] - surface.pos[2]) <= surface.size[2] / 2 + PHYSICS.playerRadius;
 }
 
 function surfaceBelow(position: Vec3, surfaces: Surface[]) {

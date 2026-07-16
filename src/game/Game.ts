@@ -4,7 +4,7 @@ import { AudioManager } from './AudioManager';
 import { UIManager } from './UIManager';
 import { AssetManager, type AssetId } from './AssetManager';
 import {
-  levelData, type PlatformDef, type CollisionSurfaceDef, type Vec3, type MovingPlatformDef,
+  levelData, type PlatformDef, type CollisionSurfaceDef, type Vec3, type MovingPlatformDef, type RotatorDef,
 } from './LevelData';
 import { PHYSICS } from './PhysicsConfig';
 import { validateLevelData } from './LevelValidator';
@@ -17,6 +17,7 @@ type Platform = {
 };
 type AnimatedPickup = { object: THREE.Object3D; baseY: number; phase: number };
 type Particle = { mesh: THREE.Mesh; velocity: THREE.Vector3; life: number };
+type RotatingHazard = { root: THREE.Group; def: RotatorDef };
 type CheckpointVisual = {
   root: THREE.Group;
   ring: THREE.Mesh<THREE.TorusGeometry, THREE.MeshBasicMaterial>;
@@ -66,12 +67,14 @@ export class Game {
   );
   private velocity = new THREE.Vector3();
   private platforms: Platform[] = [];
-  private movingPlatform?: Platform;
+  private movingPlatforms: Platform[] = [];
   private groundedOn?: Platform;
   private coins: AnimatedPickup[] = [];
   private collected = new Set<THREE.Object3D>();
   private saws: THREE.Object3D[] = [];
   private spikeTraps: SpikeTrap[] = [];
+  private rotators: RotatingHazard[] = [];
+  private clockworkDecor: THREE.Object3D[] = [];
   private actMarkers: ActMarkerVisual[] = [];
   private respawn = v(levelData.start);
   private grounded = false;
@@ -148,7 +151,10 @@ export class Game {
       velocity: this.velocity.toArray(),
       grounded: this.grounded,
       groundedOn: this.groundedOn?.def.id ?? null,
-      movingPlatformX: this.movingPlatform?.root.position.x ?? null,
+      movingPlatforms: this.movingPlatforms.map(platform => ({
+        id: platform.def.id,
+        position: platform.root.position.toArray(),
+      })),
       checkpointCount: this.activatedCheckpoints.size,
       coins: this.collected.size,
       falls: this.deaths,
@@ -231,8 +237,9 @@ export class Game {
     this.createActLandmarks();
     this.player.position.copy(this.respawn);
     this.applyDevScenario();
-    this.camera.position.copy(this.player.position).add(new THREE.Vector3(0, 6.35, 9.25));
-    this.cameraFocus.copy(this.player.position).add(new THREE.Vector3(0, 1.2, -6.15));
+    const camera = levelData.camera ?? { height: 6.35, distance: 9.25, lookAhead: 6.15, focusHeight: 1.2 };
+    this.camera.position.copy(this.player.position).add(new THREE.Vector3(0, camera.height, camera.distance));
+    this.cameraFocus.copy(this.player.position).add(new THREE.Vector3(0, camera.focusHeight, -camera.lookAhead));
   }
 
   private createPlatform(def: PlatformDef) {
@@ -240,14 +247,17 @@ export class Game {
     root.position.copy(v(def.pos));
     root.name = `platform-${def.id}`;
     const asset: AssetId = def.asset
-      ?? (def.visual === 'grass' ? 'grassCube' : def.visual === 'rock' ? 'rockLarge' : 'bridge');
-    if (def.visual === 'grass') {
+      ?? (def.visual === 'grass' ? 'grassCube'
+        : def.visual === 'brick' ? 'brickCube'
+          : def.visual === 'rock' ? 'rockLarge' : 'bridge');
+    if (def.visual === 'grass' || def.visual === 'brick') {
+      const tileAsset: AssetId = def.visual === 'brick' ? 'brickCube' : 'grassCube';
       const columns = Math.ceil(def.size[0] / 5);
       const rows = Math.ceil(def.size[2] / 5);
       const tileWidth = def.size[0] / columns;
       const tileDepth = def.size[2] / rows;
       for (let column = 0; column < columns; column++) for (let row = 0; row < rows; row++) {
-        const tile = this.assets.create('grassCube', { size: [tileWidth, def.size[1], tileDepth] });
+        const tile = this.assets.create(tileAsset, { size: [tileWidth, def.size[1], tileDepth] });
         tile.position.set(
           -def.size[0] / 2 + tileWidth * (column + .5),
           -def.size[1] / 2,
@@ -269,39 +279,50 @@ export class Game {
       previousPosition: root.position.clone(),
     };
     if (def.collision !== false) this.platforms.push(platform);
-    if (def.moving) this.movingPlatform = platform;
+    if (def.moving) this.movingPlatforms.push(platform);
   }
 
   private applyDevScenario() {
     if (!import.meta.env.DEV) return;
     const scenario = new URLSearchParams(location.search).get('scenario');
-    if (!['bridge', 'bouncer', 'checkpoint', 'hazard', 'moving', 'finish', 'finish-persist'].includes(scenario ?? '')) return;
+    if (!['bridge', 'bouncer', 'launcher', 'checkpoint', 'hazard', 'moving', 'finish', 'finish-persist'].includes(scenario ?? '')) return;
     this.devScenario = scenario !== 'finish-persist';
-    const bridge = levelData.platforms.find(platform => platform.id === 'bridge')!;
-    const bouncerSurface = levelData.platforms.find(platform => platform.id === 'bouncer')!;
+    const bridge = levelData.platforms.find(platform => platform.id === 'bridge');
+    const launcher = levelData.launchers[0];
+    const launcherSurface = launcher && levelData.platforms.find(platform => (
+      Math.abs(launcher.pos[0] - platform.pos[0]) <= platform.size[0] / 2
+      && Math.abs(launcher.pos[2] - platform.pos[2]) <= platform.size[2] / 2
+    ));
     const checkpoint = levelData.checkpoints[1] ?? levelData.checkpoints[0];
-    const movingIndex = levelData.criticalRoute.indexOf('moving');
-    const movingApproach = levelData.platforms.find(platform => platform.id === levelData.criticalRoute[movingIndex - 1])!;
-    const movingZ = levelData.platforms.find(platform => platform.id === 'moving')!.pos[2];
+    const movingDef = levelData.platforms.find(platform => platform.moving);
+    const movingIndex = movingDef ? levelData.criticalRoute.indexOf(movingDef.id) : -1;
+    const movingApproach = movingIndex > 0
+      ? levelData.platforms.find(platform => platform.id === levelData.criticalRoute[movingIndex - 1])
+      : undefined;
+    const movingZ = movingDef?.pos[2] ?? 0;
     const priorCheckpoint = levelData.checkpoints
       .filter(item => item.pos[2] > movingZ)
       .sort((a, b) => a.pos[2] - b.pos[2])[0] ?? levelData.checkpoints[0];
-    if (scenario === 'bridge') this.player.position.set(
+    if (scenario === 'bridge' && bridge) this.player.position.set(
       bridge.pos[0],
       bridge.pos[1] + bridge.size[1] / 2,
       bridge.pos[2] + bridge.size[2] / 2 + 2.4,
     );
-    if (scenario === 'bouncer') this.player.position.set(
-      levelData.bouncer.pos[0],
-      bouncerSurface.pos[1] + bouncerSurface.size[1] / 2,
-      levelData.bouncer.pos[2] + 4,
+    if ((scenario === 'bouncer' || scenario === 'launcher') && launcher && launcherSurface) this.player.position.set(
+      launcher.pos[0],
+      launcherSurface.pos[1] + launcherSurface.size[1] / 2,
+      launcher.pos[2] + 3,
     );
-    if (scenario === 'checkpoint') this.player.position.copy(v(checkpoint.respawn));
+    if (scenario === 'checkpoint' && checkpoint) this.player.position.copy(v(checkpoint.respawn));
     if (scenario === 'hazard') {
-      const hazard = levelData.spikes[0];
-      this.player.position.set(hazard[0], hazard[1] - .1, hazard[2]);
+      const spike = levelData.spikes[0] ?? levelData.saws[0];
+      const rotator = levelData.rotators[0];
+      if (spike) this.player.position.set(spike[0], spike[1] - 1, spike[2]);
+      else if (rotator) this.player.position.set(
+        rotator.pos[0] + rotator.radius * .66, rotator.pos[1] - 1, rotator.pos[2],
+      );
     }
-    if (scenario === 'moving') {
+    if (scenario === 'moving' && movingApproach) {
       this.player.position.set(
         movingApproach.pos[0],
         movingApproach.pos[1] + movingApproach.size[1] / 2,
@@ -402,10 +423,16 @@ export class Game {
   }
 
   private createHazards() {
-    const bouncer = this.assets.create('bouncer', { size: [4, .65, 4] });
-    bouncer.position.copy(v(levelData.bouncer.pos));
-    bouncer.position.y -= .18;
-    this.scene.add(bouncer);
+    levelData.launchers.forEach(launcher => {
+      const object = launcher.visual === 'cannon'
+        ? this.assets.create('cannon', { height: 2.65 })
+        : this.assets.create('bouncer', { size: [4, .65, 4] });
+      object.position.copy(v(launcher.pos));
+      object.rotation.y = launcher.rotY ?? 0;
+      if (launcher.visual === 'bouncer') object.position.y -= .18;
+      object.name = `launcher-${launcher.id}`;
+      this.scene.add(object);
+    });
 
     const spikeClip = THREE.AnimationClip.findByName(this.assets.animations('spikes'), 'SpikeTrap_Activate');
     levelData.spikes.forEach((position, index) => {
@@ -446,6 +473,49 @@ export class Game {
       this.saws.push(saw);
       this.scene.add(saw);
     });
+    levelData.rotators.forEach(definition => this.createRotator(definition));
+  }
+
+  private createRotator(def: RotatorDef) {
+    const root = new THREE.Group();
+    root.position.copy(v(def.pos));
+    root.name = `rotator-${def.id}`;
+    const color = def.color ?? 0xffb64c;
+    const metal = new THREE.MeshStandardMaterial({
+      color: 0x4b3b59, metalness: .58, roughness: .32,
+    });
+    const accent = new THREE.MeshStandardMaterial({
+      color, emissive: color, emissiveIntensity: .34, metalness: .38, roughness: .28,
+    });
+    const pillar = this.assets.create('hazardCylinder', { height: 2.2 });
+    pillar.position.y = -1;
+    root.add(pillar);
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(.78, .92, .52, 12), accent);
+    hub.castShadow = true;
+    root.add(hub);
+    const armCount = def.arms ?? 2;
+    for (let index = 0; index < armCount; index++) {
+      const arm = new THREE.Group();
+      arm.rotation.y = index * Math.PI * 2 / armCount;
+      const length = Math.max(1, def.radius - 1.05);
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(length, .32, .48), metal);
+      beam.position.x = 1.05 + length / 2;
+      beam.castShadow = true;
+      beam.receiveShadow = true;
+      const tip = this.assets.create('spikyBall', { height: .92 });
+      tip.position.set(def.radius, -.46, 0);
+      arm.add(beam, tip);
+      root.add(arm);
+    }
+    const sweep = new THREE.Mesh(
+      new THREE.TorusGeometry(def.radius, .055, 6, 64),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .28, depthWrite: false }),
+    );
+    sweep.rotation.x = Math.PI / 2;
+    sweep.position.y = -1.02;
+    root.add(sweep);
+    this.rotators.push({ root, def });
+    this.scene.add(root);
   }
 
   private createCheckpointAndFinish() {
@@ -503,7 +573,8 @@ export class Game {
   private createPropsAndSky() {
     levelData.props.filter(prop => this.assets.has(prop.asset)).forEach(prop => this.createProp(prop));
     const cloudIds: AssetId[] = ['cloud1', 'cloud2', 'cloud3'];
-    for (let index = 0; index < 22; index++) {
+    const cloudCount = levelData.id === 'sunset-spires' ? 16 : 22;
+    for (let index = 0; index < cloudCount; index++) {
       const cloud = this.assets.create(cloudIds[index % cloudIds.length], {
         height: 3 + (index % 4), castShadow: false, receiveShadow: false,
       });
@@ -512,6 +583,104 @@ export class Game {
       cloud.rotation.y = index * .73;
       this.scene.add(cloud);
     }
+    if (levelData.id === 'sunset-spires') this.createCitadelScenery();
+  }
+
+  private createCitadelScenery() {
+    const stone = new THREE.MeshStandardMaterial({ color: 0x765064, roughness: .82, metalness: .04 });
+    const deepStone = new THREE.MeshStandardMaterial({ color: 0x59425f, roughness: .78, metalness: .08 });
+    const gold = new THREE.MeshStandardMaterial({
+      color: 0xe0a04b, emissive: 0x7d351f, emissiveIntensity: .32, roughness: .42, metalness: .34,
+    });
+    const sun = new THREE.Mesh(
+      new THREE.SphereGeometry(9, 24, 16),
+      new THREE.MeshBasicMaterial({ color: 0xffc56a, fog: false }),
+    );
+    sun.position.set(-42, 38, -238);
+    sun.name = 'citadel-sun';
+    this.scene.add(sun);
+
+    const spirePositions: Vec3[] = [[-40,-5,-54],[38,-3,-82],[-42,1,-144],[40,6,-190]];
+    spirePositions.forEach((position, index) => {
+      const root = new THREE.Group();
+      root.position.copy(v(position));
+      const bodyHeight = 11 + index * 1.55;
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 3.6, bodyHeight, 6), deepStone);
+      body.position.y = bodyHeight / 2;
+      const crown = new THREE.Mesh(new THREE.ConeGeometry(2.75, 5.2, 6), gold);
+      crown.position.y = bodyHeight + 2.6;
+      for (const heightRatio of [.28, .72]) {
+        const bandRadius = THREE.MathUtils.lerp(3.2, 2.05, heightRatio);
+        const band = new THREE.Mesh(new THREE.TorusGeometry(bandRadius, .12, 6, 18), gold);
+        band.rotation.x = Math.PI / 2;
+        band.position.y = bodyHeight * heightRatio;
+        root.add(band);
+      }
+      const window = new THREE.Mesh(new THREE.BoxGeometry(.72, 1.55, .15), gold);
+      window.position.set(0, bodyHeight * .62, 2.65);
+      body.castShadow = crown.castShadow = true;
+      root.add(body, crown, window);
+      this.scene.add(root);
+    });
+
+    levelData.platforms.filter(platform => (
+      platform.visual === 'brick' && !platform.moving && platform.pos[1] >= 5 && platform.size[0] >= 10
+    )).forEach(platform => {
+      const height = Math.min(8, 2.8 + platform.pos[1] * .24);
+      const support = new THREE.Mesh(
+        new THREE.CylinderGeometry(platform.size[0] * .24, platform.size[0] * .38, height, 6), stone,
+      );
+      support.position.set(platform.pos[0], platform.pos[1] - platform.size[1] / 2 - height / 2, platform.pos[2]);
+      support.castShadow = true;
+      support.receiveShadow = true;
+      this.scene.add(support);
+
+      if (['clockwork-floor', 'upper-gallery', 'spinner-terrace', 'summit'].includes(platform.id)) {
+        for (const side of [-1, 1]) {
+          const trim = new THREE.Mesh(new THREE.BoxGeometry(.18, .18, platform.size[2] * .82), gold);
+          trim.position.set(
+            platform.pos[0] + side * (platform.size[0] / 2 - .3),
+            platform.pos[1] + platform.size[1] / 2 + .1,
+            platform.pos[2],
+          );
+          trim.castShadow = true;
+          this.scene.add(trim);
+        }
+      }
+    });
+
+    const gearPositions: Vec3[] = [[-12,11,-82],[14,15,-141],[-10,22,-184]];
+    gearPositions.forEach((position, index) => {
+      const gear = new THREE.Group();
+      gear.position.copy(v(position));
+      gear.rotation.y = index % 2 ? -.45 : .35;
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(2.7 + index * .35, .24, 8, 24), gold);
+      gear.add(ring);
+      for (let tooth = 0; tooth < 12; tooth++) {
+        const angle = tooth / 12 * Math.PI * 2;
+        const block = new THREE.Mesh(new THREE.BoxGeometry(.54, .78, .44), gold);
+        const radius = 3.02 + index * .35;
+        block.position.set(Math.cos(angle) * radius, Math.sin(angle) * radius, 0);
+        block.rotation.z = angle;
+        gear.add(block);
+      }
+      this.clockworkDecor.push(gear);
+      this.scene.add(gear);
+    });
+
+    levelData.platforms.filter(platform => platform.moving?.axis === 'y').forEach(platform => {
+      const travel = platform.moving?.distance ?? 2;
+      const railHeight = travel * 2 + 3.5;
+      const railRoot = new THREE.Group();
+      railRoot.position.set(platform.pos[0], platform.pos[1], platform.pos[2]);
+      for (const side of [-1, 1]) {
+        const rail = new THREE.Mesh(new THREE.CylinderGeometry(.13, .13, railHeight, 8), gold);
+        rail.position.x = side * (platform.size[0] / 2 + .35);
+        rail.castShadow = true;
+        railRoot.add(rail);
+      }
+      this.scene.add(railRoot);
+    });
   }
 
   private createProp(prop: (typeof levelData.props)[number]) {
@@ -725,12 +894,12 @@ export class Game {
   }
 
   private advanceWorld(delta: number, carryPlayer: boolean) {
-    const platform = this.movingPlatform;
-    const moving = platform?.def.moving;
-    if (platform && moving) {
+    for (const platform of this.movingPlatforms) {
+      const moving = platform.def.moving;
+      if (!moving) continue;
       platform.previousPosition.copy(platform.root.position);
       platform.root.position[moving.axis] = platform.basePosition[moving.axis]
-        + Math.sin(this.simulationTime * moving.speed) * moving.distance;
+        + Math.sin(this.simulationTime * moving.speed + (moving.phase ?? 0)) * moving.distance;
       if (carryPlayer && this.groundedOn === platform) {
         this.platformDelta.subVectors(platform.root.position, platform.previousPosition);
         this.player.position.add(this.platformDelta);
@@ -744,6 +913,12 @@ export class Game {
     this.saws.forEach((saw, index) => {
       saw.rotation.z += delta * (index ? -5 : 5);
       saw.position.x = saw.userData.baseX + Math.sin(this.simulationTime * 1.8 + index * Math.PI) * 1.35;
+    });
+    this.rotators.forEach(rotator => {
+      rotator.root.rotation.y += delta * rotator.def.speed;
+    });
+    this.clockworkDecor.forEach((gear, index) => {
+      gear.rotation.z += delta * (index % 2 ? -.18 : .22);
     });
     this.spikeTraps.forEach(trap => {
       const phase = (this.simulationTime + trap.phaseOffset) % SPIKE_CYCLE;
@@ -810,9 +985,12 @@ export class Game {
       this.haptic(6);
     }
 
-    if (this.grounded && this.horizontalDistance(this.player.position, v(levelData.bouncer.pos)) < 1.8) {
-      const target = v(levelData.bouncer.target);
-      const flightTime = levelData.bouncer.flightTime;
+    const launcher = levelData.launchers.find(definition => (
+      this.grounded && this.horizontalDistance(this.player.position, v(definition.pos)) < 1.8
+    ));
+    if (launcher) {
+      const target = v(launcher.target);
+      const flightTime = launcher.flightTime;
       this.bounceVelocity.subVectors(target, this.player.position).multiplyScalar(1 / flightTime).setY(0);
       this.velocity.x = this.bounceVelocity.x;
       this.velocity.z = this.bounceVelocity.z;
@@ -822,8 +1000,8 @@ export class Game {
       this.groundedOn = undefined;
       this.audio.play('bounce');
       this.haptic([12, 20, 18]);
-      this.burst(v(levelData.bouncer.pos).add(new THREE.Vector3(0, .3, 0)), 0xff5572, 12, 4);
-      this.ui.toast('Super bounce!');
+      this.burst(v(launcher.pos).add(new THREE.Vector3(0, .3, 0)), 0xffb34f, 12, 4);
+      this.ui.toast(launcher.message ?? 'Launch!');
     }
 
     if (this.resetGrace <= 0) {
@@ -837,8 +1015,29 @@ export class Game {
         const distance = this.pointToSegmentDistanceXZ(saw.position, previousPosition, this.player.position);
         return distance < 1.55 && Math.abs(this.player.position.y + 1 - saw.position.y) < 1.75;
       });
-      if (spikeHit || sawHit) {
-        this.beginRespawn(spikeHit ? 'Ouch!' : 'Saw that coming!');
+      const rotatorHit = this.rotators.some(rotator => {
+        if (Math.abs(this.player.position.y + 1 - rotator.def.pos[1]) > .95) return false;
+        const armCount = rotator.def.arms ?? 2;
+        for (let index = 0; index < armCount; index++) {
+          const angle = rotator.root.rotation.y + index * Math.PI * 2 / armCount;
+          const directionX = Math.cos(angle);
+          const directionZ = -Math.sin(angle);
+          const start = new THREE.Vector3(
+            rotator.root.position.x + directionX * .8,
+            rotator.root.position.y,
+            rotator.root.position.z + directionZ * .8,
+          );
+          const end = new THREE.Vector3(
+            rotator.root.position.x + directionX * rotator.def.radius,
+            rotator.root.position.y,
+            rotator.root.position.z + directionZ * rotator.def.radius,
+          );
+          if (this.pointToSegmentDistanceXZ(this.player.position, start, end) < PHYSICS.playerRadius + .36) return true;
+        }
+        return false;
+      });
+      if (spikeHit || sawHit || rotatorHit) {
+        this.beginRespawn(spikeHit ? 'Ouch!' : rotatorHit ? 'Mind the clockwork!' : 'Saw that coming!');
         return;
       }
     }
@@ -867,22 +1066,23 @@ export class Game {
   private updateCamera(delta: number) {
     const fast = this.dashTime > 0;
     const airborne = !this.grounded;
+    const camera = levelData.camera ?? { height: 6.35, distance: 9.3, lookAhead: 6.15, focusHeight: 1.2 };
     const targetFov = fast ? 63 : airborne ? 59 : 56;
     this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, 1 - Math.exp(-7 * delta));
     this.camera.updateProjectionMatrix();
     this.cameraKick = Math.max(0, this.cameraKick - delta * 1.7);
     const verticalLead = THREE.MathUtils.clamp(this.velocity.y * .055, -.45, 1.05);
-    const forwardLead = 6.15 + THREE.MathUtils.clamp(-this.velocity.z * .24, 0, 2.2);
+    const forwardLead = camera.lookAhead + THREE.MathUtils.clamp(-this.velocity.z * .24, 0, 2.2);
     const focus = this.player.position.clone().add(new THREE.Vector3(
       this.velocity.x * .18,
-      1.2 + verticalLead,
+      camera.focusHeight + verticalLead,
       -forwardLead,
     ));
     this.cameraFocus.lerp(focus, 1 - Math.exp(-8 * delta));
     const desired = this.player.position.clone().add(new THREE.Vector3(
       -this.velocity.x * .07,
-      6.35 + verticalLead - this.cameraKick,
-      fast ? 10.5 : 9.3,
+      camera.height + verticalLead - this.cameraKick,
+      fast ? camera.distance + 1.2 : camera.distance,
     ));
     this.camera.position.lerp(desired, 1 - Math.exp(-7.5 * delta));
     this.camera.lookAt(this.cameraFocus);
