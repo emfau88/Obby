@@ -27,3 +27,15 @@ export const JUMP_METRICS = {
   airtime: PHYSICS.jumpSpeed * 2 / PHYSICS.gravity,
   flatDistance: PHYSICS.moveSpeed * PHYSICS.jumpSpeed * 2 / PHYSICS.gravity,
 } as const;
+
+export const GAMEPLAY_SAFETY = {
+  rotatorHitPadding: .27,
+  respawnGrace: .65,
+  fallResetDepth: 17,
+  maxInheritedHorizontalSpeed: 4,
+  maxInheritedRiseSpeed: 2.5,
+} as const;
+
+export function fallResetY(respawnY: number) {
+  return Math.max(-12, respawnY - GAMEPLAY_SAFETY.fallResetDepth);
+}

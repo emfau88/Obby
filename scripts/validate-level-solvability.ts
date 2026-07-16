@@ -1,5 +1,5 @@
 import { LEVELS, type LevelDefinition, type PlatformDef, type Vec3 } from '../src/game/LevelData';
-import { PHYSICS } from '../src/game/PhysicsConfig';
+import { fallResetY, GAMEPLAY_SAFETY, PHYSICS } from '../src/game/PhysicsConfig';
 
 type Result = {
   level: string;
@@ -70,6 +70,45 @@ function validate(level: LevelDefinition): Result {
   const route: Result['route'] = [];
   let checks = 0;
   const byId = new Map(level.platforms.map(platform => [platform.id, platform]));
+
+  for (const [index, checkpoint] of level.checkpoints.entries()) {
+    checks++;
+    const resetY = fallResetY(checkpoint.respawn[1]);
+    const fallDistance = checkpoint.respawn[1] - resetY;
+    if (fallDistance < 12) {
+      failures.push(`Checkpoint ${index + 1} fall reset is too aggressive (${fallDistance.toFixed(1)}m)`);
+    }
+  }
+
+  for (const platform of level.platforms) {
+    if (!platform.moving) continue;
+    checks++;
+    const maximumSpeed = platform.moving.distance * platform.moving.speed;
+    const inheritanceLimit = platform.moving.axis === 'y'
+      ? GAMEPLAY_SAFETY.maxInheritedRiseSpeed
+      : GAMEPLAY_SAFETY.maxInheritedHorizontalSpeed;
+    if (maximumSpeed > inheritanceLimit * 1.05) {
+      warnings.push(`${platform.id} moves at ${maximumSpeed.toFixed(2)}m/s but jump inheritance is capped at ${inheritanceLimit.toFixed(2)}m/s`);
+    }
+  }
+
+  if (level.gateMechanism) {
+    checks += 4;
+    const gate = level.gateMechanism;
+    if (!supportAt(level, gate.lever.pos)) failures.push('Gate lever has no supporting surface');
+    if (gate.openHeight < PHYSICS.playerHeight + .5) {
+      failures.push(`Gate clearance is only ${gate.openHeight.toFixed(2)}m`);
+    }
+    const doorOverlap = Math.abs(gate.door.pos[0] - gate.collider.pos[0]) <= gate.collider.size[0] / 2
+      && Math.abs(gate.door.pos[2] - gate.collider.pos[2]) <= gate.collider.size[2];
+    if (!doorOverlap) failures.push('Gate collider does not overlap the visible door');
+    const portalLeft = gate.portalCenterX - gate.portalWidth / 2;
+    const portalRight = gate.portalCenterX + gate.portalWidth / 2;
+    if (portalLeft >= gate.collider.pos[0] - gate.collider.size[0] / 2
+      || portalRight <= gate.collider.pos[0] + gate.collider.size[0] / 2) {
+      failures.push('Gate portal has no blocking side walls');
+    }
+  }
 
   for (let index = 1; index < level.criticalRoute.length; index++) {
     const from = byId.get(level.criticalRoute[index - 1]);

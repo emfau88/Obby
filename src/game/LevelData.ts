@@ -31,12 +31,23 @@ export type PlatformDef = {
 };
 export type CollisionSurfaceDef = { id: string; pos: Vec3; size: Vec3 };
 export type PropDef = { asset: AssetId; pos: Vec3; height: number; rotY?: number };
+export type GateMechanismDef = {
+  door: PropDef;
+  lever: PropDef;
+  collider: { pos: Vec3; size: Vec3 };
+  gear: Vec3;
+  triggerRadius: number;
+  portalCenterX: number;
+  portalWidth: number;
+  openHeight: number;
+  openDuration: number;
+};
 export type TutorialDef = { id: string; z: number; text: string };
 export type LevelAct = {
   name: string;
   startZ: number;
   color: number;
-  gate?: { z: number; y: number; width: number };
+  gate?: { x?: number; z: number; y: number; width: number };
 };
 export type LevelDefinition = {
   id: 'cloudtop-run' | 'sunset-spires';
@@ -62,6 +73,7 @@ export type LevelDefinition = {
   finish: Vec3;
   tutorials: TutorialDef[];
   props: PropDef[];
+  gateMechanism?: GateMechanismDef;
   bonusBeacons: Vec3[];
   criticalRoute: string[];
   camera?: { height: number; distance: number; lookAhead: number; focusHeight: number };
@@ -163,8 +175,8 @@ const sunsetSpires: LevelDefinition = {
   mastery: { coins: 22, time: 68, falls: 2 },
   acts: [
     { name: 'Golden Ruins', startZ: 0, color: 0xffcc62 },
-    { name: 'Clockwork Core', startZ: -62, color: 0xff725e, gate: { z: -66, y: 7, width: 13 } },
-    { name: 'Spire Ascent', startZ: -121, color: 0x9b83ff, gate: { z: -123, y: 12, width: 12 } },
+    { name: 'Clockwork Core', startZ: -62, color: 0xff725e, gate: { x: -4, z: -66, y: 7, width: 11 } },
+    { name: 'Spire Ascent', startZ: -121, color: 0x9b83ff, gate: { x: 4, z: -123, y: 12, width: 12 } },
   ],
   start: [0,2,5],
   finishZ: -196,
@@ -215,18 +227,28 @@ const sunsetSpires: LevelDefinition = {
   tutorials: [
     {id:'ruins',z:-10,text:'The Citadel climbs upward — read the next landing'},
     {id:'cannon',z:-32,text:'Step into the cannon and keep steering toward the balcony'},
-    {id:'clockwork',z:-68,text:'Follow the sweep, then cut across the clockwork floor'},
+    {id:'clockwork',z:-65,text:'Step up to the brass lever to open the clockwork gate'},
     {id:'lift-one',z:-94,text:'Board the lift low and jump when it reaches the gallery'},
     {id:'bonus',z:-123,text:'The outer rock holds a risky mastery coin'},
     {id:'spire',z:-135,text:'Use the quiet space near the hub to read the three arms'},
     {id:'summit',z:-170,text:'One clean final jump reaches the crown'},
   ],
   props: [
-    {asset:'door',pos:[-4,7,-71],height:5.8,rotY:0},
     {asset:'pipeStraight',pos:[-9,7,-81],height:5.5,rotY:.2},{asset:'pipe90',pos:[9,7,-84],height:4.2,rotY:-.8},
     {asset:'tower',pos:[-18,7,-111],height:18,rotY:.2},{asset:'tower',pos:[18,13,-145],height:22,rotY:-.3},
     {asset:'tower',pos:[0,20,-202],height:17},{asset:'chest',pos:[-3,20,-194],height:2.2,rotY:.45},
   ],
+  gateMechanism: {
+    door: {asset:'door',pos:[-4,7,-71],height:5.8,rotY:0},
+    lever: {asset:'lever',pos:[-8,7,-67.8],height:1.65,rotY:1.5708},
+    collider: {pos:[-4,9.45,-71],size:[4.35,4.9,.85]},
+    gear: [-12,11,-82],
+    triggerRadius: 1.45,
+    portalCenterX: 0,
+    portalWidth: 20,
+    openHeight: 5.2,
+    openDuration: 1.15,
+  },
   bonusBeacons: [[-3.8,14.8,-128],[-6.2,15,-129],[-8.5,15.2,-130]],
   criticalRoute: [
     'start','lower-west','lower-east','launcher-deck','arrival-balcony','archway','clockwork-floor',

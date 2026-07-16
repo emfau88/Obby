@@ -59,6 +59,21 @@ export function validateLevelData() {
   for (const [index, checkpoint] of levelData.checkpoints.entries()) {
     if (!surfaceBelow(checkpoint.respawn, surfaces)) issues.push(`checkpoint ${index + 1} respawn has no support`);
   }
+  const gate = levelData.gateMechanism;
+  if (gate) {
+    if (!surfaceBelow(gate.lever.pos, surfaces)) issues.push('gate lever has no supporting surface');
+    if (Math.abs(gate.door.pos[0] - gate.collider.pos[0]) > gate.collider.size[0] / 2
+      || Math.abs(gate.door.pos[2] - gate.collider.pos[2]) > gate.collider.size[2]) {
+      issues.push('gate collider does not overlap its door');
+    }
+    if (gate.openHeight < PHYSICS.playerHeight + .5) issues.push('gate does not open high enough');
+    const portalLeft = gate.portalCenterX - gate.portalWidth / 2;
+    const portalRight = gate.portalCenterX + gate.portalWidth / 2;
+    if (portalLeft >= gate.collider.pos[0] - gate.collider.size[0] / 2
+      || portalRight <= gate.collider.pos[0] + gate.collider.size[0] / 2) {
+      issues.push('gate portal has no side walls');
+    }
+  }
   if (!surfaceBelow(levelData.finish, surfaces)) issues.push('finish has no supporting surface');
   return issues;
 }

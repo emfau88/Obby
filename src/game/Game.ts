@@ -5,8 +5,9 @@ import { UIManager } from './UIManager';
 import { AssetManager, type AssetId } from './AssetManager';
 import {
   levelData, type PlatformDef, type CollisionSurfaceDef, type Vec3, type MovingPlatformDef, type RotatorDef,
+  type GateMechanismDef,
 } from './LevelData';
-import { PHYSICS } from './PhysicsConfig';
+import { fallResetY, GAMEPLAY_SAFETY, PHYSICS } from './PhysicsConfig';
 import { validateLevelData } from './LevelValidator';
 
 type Platform = {
@@ -34,10 +35,24 @@ type SpikeTrap = {
   warning: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
 };
 type ActMarkerVisual = {
-  crystal: THREE.Mesh<THREE.OctahedronGeometry, THREE.MeshStandardMaterial>;
-  ring: THREE.Mesh<THREE.TorusGeometry, THREE.MeshBasicMaterial>;
-  baseY: number;
+  material: THREE.MeshStandardMaterial;
   phase: number;
+};
+type GateMechanism = {
+  def: GateMechanismDef;
+  door: THREE.Object3D;
+  doorLeaf: THREE.Object3D;
+  doorLeafBaseY: number;
+  collider: Platform;
+  colliderBaseY: number;
+  lever: THREE.Object3D;
+  leverMixer?: THREE.AnimationMixer;
+  leverAction?: THREE.AnimationAction;
+  prompt: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
+  gear?: THREE.Object3D;
+  activated: boolean;
+  progress: number;
+  opened: boolean;
 };
 
 const NO_ACTIONS: InputActions = { jump: false, dash: false };
@@ -76,6 +91,7 @@ export class Game {
   private rotators: RotatingHazard[] = [];
   private clockworkDecor: THREE.Object3D[] = [];
   private actMarkers: ActMarkerVisual[] = [];
+  private gateMechanism?: GateMechanism;
   private respawn = v(levelData.start);
   private grounded = false;
   private dashCooldown = 0;
@@ -97,6 +113,7 @@ export class Game {
   private cameraFocus = new THREE.Vector3();
   private previousPlayerPosition = new THREE.Vector3();
   private platformDelta = new THREE.Vector3();
+  private supportVelocity = new THREE.Vector3();
   private sun?: THREE.DirectionalLight;
   private sunTarget = new THREE.Object3D();
   private accumulator = 0;
@@ -162,6 +179,12 @@ export class Game {
       runTime: this.runTime,
       respawning: this.respawnTimer > 0,
       finished: this.done,
+      fallResetY: this.fallResetY(),
+      gate: this.gateMechanism ? {
+        activated: this.gateMechanism.activated,
+        progress: Number(this.gateMechanism.progress.toFixed(2)),
+        opened: this.gateMechanism.opened,
+      } : null,
     };
   }
 
@@ -237,9 +260,7 @@ export class Game {
     this.createActLandmarks();
     this.player.position.copy(this.respawn);
     this.applyDevScenario();
-    const camera = levelData.camera ?? { height: 6.35, distance: 9.25, lookAhead: 6.15, focusHeight: 1.2 };
-    this.camera.position.copy(this.player.position).add(new THREE.Vector3(0, camera.height, camera.distance));
-    this.cameraFocus.copy(this.player.position).add(new THREE.Vector3(0, camera.focusHeight, -camera.lookAhead));
+    this.snapCameraToPlayer();
   }
 
   private createPlatform(def: PlatformDef) {
@@ -272,10 +293,15 @@ export class Game {
       root.add(visual);
     }
     this.scene.add(root);
+    const basePosition = root.position.clone();
+    if (def.moving) {
+      root.position[def.moving.axis] = basePosition[def.moving.axis]
+        + Math.sin(def.moving.phase ?? 0) * def.moving.distance;
+    }
     const platform: Platform = {
       root,
       def,
-      basePosition: root.position.clone(),
+      basePosition,
       previousPosition: root.position.clone(),
     };
     if (def.collision !== false) this.platforms.push(platform);
@@ -284,7 +310,19 @@ export class Game {
 
   private applyDevScenario() {
     if (!import.meta.env.DEV) return;
-    const scenario = new URLSearchParams(location.search).get('scenario');
+    const params = new URLSearchParams(location.search);
+    const scenario = params.get('scenario');
+    const spawnId = params.get('spawn');
+    const spawn = spawnId ? this.platforms.find(platform => platform.def.id === spawnId) : undefined;
+    if (spawn) {
+      const position = spawn.root.position.clone();
+      position.y += spawn.def.size[1] / 2;
+      position.z += Math.min(1.5, spawn.def.size[2] * .2);
+      this.player.position.copy(position);
+      this.respawn.copy(position);
+      this.devScenario = true;
+      return;
+    }
     if (!['bridge', 'bouncer', 'launcher', 'checkpoint', 'hazard', 'moving', 'finish', 'finish-persist'].includes(scenario ?? '')) return;
     this.devScenario = scenario !== 'finish-persist';
     const bridge = levelData.platforms.find(platform => platform.id === 'bridge');
@@ -349,9 +387,16 @@ export class Game {
   }
 
   private createActLandmarks() {
-    levelData.acts.slice(1).forEach(act => {
-      if (act.gate) this.createActMarker(new THREE.Vector3(0, act.gate.y, act.gate.z), act.gate.width, act.color);
-    });
+    if (levelData.id !== 'sunset-spires') {
+      levelData.acts.slice(1).forEach(act => {
+        if (!act.gate) return;
+        this.createActMarker(
+          new THREE.Vector3(act.gate.x ?? 0, act.gate.y, act.gate.z),
+          act.gate.width,
+          act.color,
+        );
+      });
+    }
     const bonusMaterial = new THREE.MeshStandardMaterial({
       color: 0xffd52a, emissive: 0xa95e00, emissiveIntensity: .55, roughness: .45,
     });
@@ -371,31 +416,52 @@ export class Game {
     root.position.copy(position);
     root.name = 'act-marker';
     const stoneMaterial = new THREE.MeshStandardMaterial({
-      color: 0xe9f2e2, roughness: .78, metalness: .02,
+      color: levelData.id === 'sunset-spires' ? 0x725469 : 0xe9f2e2,
+      roughness: .76,
+      metalness: levelData.id === 'sunset-spires' ? .12 : .02,
     });
-    const crystalMaterial = new THREE.MeshStandardMaterial({
-      color, emissive: color, emissiveIntensity: .62, roughness: .24, metalness: .12,
+    const accentMaterial = new THREE.MeshStandardMaterial({
+      color, emissive: color, emissiveIntensity: .5, roughness: .26, metalness: .28,
     });
-    const ringMaterial = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: .48, depthWrite: false,
-    });
-    for (const [index, side] of [-1, 1].entries()) {
-      const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(.42, .58, .58, 6), stoneMaterial);
-      pedestal.position.set(side * width / 2, .29, 0);
-      pedestal.castShadow = true;
-      pedestal.receiveShadow = true;
-      const cap = new THREE.Mesh(new THREE.CylinderGeometry(.5, .46, .16, 8), stoneMaterial);
-      cap.position.set(side * width / 2, .64, 0);
-      cap.castShadow = true;
-      const crystal = new THREE.Mesh(new THREE.OctahedronGeometry(.34, 0), crystalMaterial);
-      crystal.position.set(side * width / 2, 1.2, 0);
-      crystal.castShadow = true;
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(.52, .035, 6, 24), ringMaterial);
-      ring.position.copy(crystal.position);
-      ring.rotation.x = Math.PI / 2;
-      root.add(pedestal, cap, crystal, ring);
-      this.actMarkers.push({ crystal, ring, baseY: crystal.position.y, phase: index * Math.PI });
+    const pillarHeight = 3.15;
+    for (const side of [-1, 1]) {
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(.82, pillarHeight, .82), stoneMaterial);
+      pillar.position.set(side * width / 2, pillarHeight / 2, 0);
+      const foot = new THREE.Mesh(new THREE.BoxGeometry(1.16, .28, 1.16), stoneMaterial);
+      foot.position.set(side * width / 2, .14, 0);
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(1.08, .3, 1.02), stoneMaterial);
+      cap.position.set(side * width / 2, pillarHeight - .15, 0);
+      const band = new THREE.Mesh(new THREE.BoxGeometry(.9, .14, .88), accentMaterial);
+      band.position.set(side * width / 2, 2.35, .02);
+      pillar.castShadow = foot.castShadow = cap.castShadow = band.castShadow = true;
+      pillar.receiveShadow = foot.receiveShadow = true;
+      root.add(pillar, foot, cap, band);
+      const colliderRoot = new THREE.Group();
+      colliderRoot.position.set(
+        position.x + side * width / 2,
+        position.y + pillarHeight / 2,
+        position.z,
+      );
+      const collider: Platform = {
+        root: colliderRoot,
+        def: {
+          id: `act-portal-${Math.abs(Math.round(position.z))}-${side < 0 ? 'left' : 'right'}`,
+          size: [.82, pillarHeight, .82],
+        },
+        basePosition: colliderRoot.position.clone(),
+        previousPosition: colliderRoot.position.clone(),
+      };
+      this.platforms.push(collider);
+      this.scene.add(colliderRoot);
     }
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(width + 1.4, .62, .92), stoneMaterial);
+    lintel.position.y = pillarHeight + .16;
+    const inset = new THREE.Mesh(new THREE.BoxGeometry(width * .48, .13, .08), accentMaterial);
+    inset.position.set(0, pillarHeight + .17, .5);
+    lintel.castShadow = true;
+    lintel.receiveShadow = true;
+    root.add(lintel, inset);
+    this.actMarkers.push({ material: accentMaterial, phase: position.z * .08 });
     this.scene.add(root);
   }
 
@@ -583,7 +649,10 @@ export class Game {
       cloud.rotation.y = index * .73;
       this.scene.add(cloud);
     }
-    if (levelData.id === 'sunset-spires') this.createCitadelScenery();
+    if (levelData.id === 'sunset-spires') {
+      this.createCitadelScenery();
+      this.createGateMechanism();
+    }
   }
 
   private createCitadelScenery() {
@@ -693,6 +762,155 @@ export class Game {
     this.scene.add(object);
   }
 
+  private createGateMechanism() {
+    const def = levelData.gateMechanism;
+    if (!def) return;
+    const door = this.assets.create(def.door.asset, { height: def.door.height });
+    door.name = 'clockwork-gate-door';
+    door.position.copy(v(def.door.pos));
+    door.rotation.y = def.door.rotY ?? 0;
+    const doorLeaf = door.getObjectByName('Door') ?? door;
+
+    const lever = this.assets.create(def.lever.asset, { height: def.lever.height });
+    lever.name = 'clockwork-gate-lever';
+    lever.position.copy(v(def.lever.pos));
+    lever.rotation.y = def.lever.rotY ?? 0;
+    const leverClip = THREE.AnimationClip.findByName(this.assets.animations(def.lever.asset), 'Lever_On');
+    const leverMixer = leverClip ? new THREE.AnimationMixer(lever) : undefined;
+    const leverAction = leverMixer && leverClip ? leverMixer.clipAction(leverClip) : undefined;
+    if (leverAction) {
+      leverAction.setLoop(THREE.LoopOnce, 1);
+      leverAction.clampWhenFinished = true;
+    }
+
+    const colliderRoot = new THREE.Group();
+    colliderRoot.name = 'collision-clockwork-gate';
+    colliderRoot.position.copy(v(def.collider.pos));
+    const collider: Platform = {
+      root: colliderRoot,
+      def: { id: 'clockwork-gate', size: def.collider.size },
+      basePosition: colliderRoot.position.clone(),
+      previousPosition: colliderRoot.position.clone(),
+    };
+    this.platforms.push(collider);
+
+    const wallMaterial = new THREE.MeshStandardMaterial({
+      color: 0x725469, roughness: .76, metalness: .12,
+    });
+    const wallTrimMaterial = new THREE.MeshStandardMaterial({
+      color: 0xe0a04b, emissive: 0x7d351f, emissiveIntensity: .24, roughness: .42, metalness: .34,
+    });
+    const wallHeight = def.door.height;
+    const portalLeft = def.portalCenterX - def.portalWidth / 2;
+    const portalRight = def.portalCenterX + def.portalWidth / 2;
+    const openingLeft = def.collider.pos[0] - def.collider.size[0] / 2;
+    const openingRight = def.collider.pos[0] + def.collider.size[0] / 2;
+    const wallSpans = [
+      { id: 'left', min: portalLeft, max: openingLeft },
+      { id: 'right', min: openingRight, max: portalRight },
+    ];
+    for (const span of wallSpans) {
+      const sideWidth = Math.max(.5, span.max - span.min);
+      const wallPosition = new THREE.Vector3(
+        (span.min + span.max) / 2,
+        def.door.pos[1] + wallHeight / 2,
+        def.collider.pos[2],
+      );
+      const base = new THREE.Mesh(new THREE.BoxGeometry(sideWidth, .38, .9), wallMaterial);
+      base.name = `clockwork-gate-base-${span.id}`;
+      base.position.set(wallPosition.x, def.door.pos[1] + .19, wallPosition.z);
+      base.castShadow = true;
+      base.receiveShadow = true;
+      this.scene.add(base);
+      const barHeight = wallHeight - .72;
+      const barCount = Math.max(2, Math.floor(sideWidth / .72));
+      for (let bar = 0; bar <= barCount; bar++) {
+        const barX = THREE.MathUtils.lerp(span.min + .18, span.max - .18, bar / barCount);
+        const grille = new THREE.Mesh(new THREE.BoxGeometry(.13, barHeight, .16), wallTrimMaterial);
+        grille.name = `clockwork-gate-grille-${span.id}-${bar + 1}`;
+        grille.position.set(barX, def.door.pos[1] + .38 + barHeight / 2, wallPosition.z);
+        grille.castShadow = true;
+        this.scene.add(grille);
+      }
+      for (const y of [def.door.pos[1] + 1.7, def.door.pos[1] + 3.55]) {
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(sideWidth, .13, .2), wallTrimMaterial);
+        rail.position.set(wallPosition.x, y, wallPosition.z);
+        rail.castShadow = true;
+        this.scene.add(rail);
+      }
+      const wallRoot = new THREE.Group();
+      wallRoot.position.copy(wallPosition);
+      const wallCollider: Platform = {
+        root: wallRoot,
+        def: { id: `clockwork-gate-wall-${span.id}`, size: [sideWidth, wallHeight, 1.05] },
+        basePosition: wallRoot.position.clone(),
+        previousPosition: wallRoot.position.clone(),
+      };
+      this.platforms.push(wallCollider);
+      this.scene.add(wallRoot);
+    }
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(def.portalWidth + .35, .38, .72), wallMaterial);
+    lintel.name = 'clockwork-gate-lintel';
+    lintel.position.set(def.portalCenterX, def.door.pos[1] + wallHeight - .19, def.collider.pos[2]);
+    lintel.castShadow = true;
+    lintel.receiveShadow = true;
+    this.scene.add(lintel);
+    const trackHeight = def.openHeight + .25;
+    for (const side of [-1, 1]) {
+      const track = new THREE.Mesh(new THREE.BoxGeometry(.18, trackHeight, .24), wallTrimMaterial);
+      track.name = `clockwork-gate-track-${side < 0 ? 'left' : 'right'}`;
+      track.position.set(
+        def.collider.pos[0] + side * (def.collider.size[0] / 2 + .18),
+        def.door.pos[1] + wallHeight + trackHeight / 2,
+        def.collider.pos[2],
+      );
+      track.castShadow = true;
+      this.scene.add(track);
+    }
+    const trackCap = new THREE.Mesh(
+      new THREE.BoxGeometry(def.collider.size[0] + .7, .18, .3),
+      wallTrimMaterial,
+    );
+    trackCap.position.set(
+      def.collider.pos[0],
+      def.door.pos[1] + wallHeight + trackHeight,
+      def.collider.pos[2],
+    );
+    trackCap.castShadow = true;
+    this.scene.add(trackCap);
+
+    const promptMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffc45b, transparent: true, opacity: .58, depthWrite: false,
+    });
+    const prompt = new THREE.Mesh(new THREE.RingGeometry(.58, .84, 28), promptMaterial);
+    prompt.name = 'clockwork-gate-lever-prompt';
+    prompt.rotation.x = -Math.PI / 2;
+    prompt.position.copy(v(def.lever.pos)).add(new THREE.Vector3(0, .035, 0));
+    const gearTarget = v(def.gear);
+    const gear = this.clockworkDecor.reduce<THREE.Object3D | undefined>((closest, candidate) => (
+      !closest || candidate.position.distanceToSquared(gearTarget) < closest.position.distanceToSquared(gearTarget)
+        ? candidate : closest
+    ), undefined);
+
+    this.gateMechanism = {
+      def,
+      door,
+      doorLeaf,
+      doorLeafBaseY: doorLeaf.position.y,
+      collider,
+      colliderBaseY: colliderRoot.position.y,
+      lever,
+      leverMixer,
+      leverAction,
+      prompt,
+      gear,
+      activated: false,
+      progress: 0,
+      opened: false,
+    };
+    this.scene.add(door, lever, colliderRoot, prompt);
+  }
+
   private async loadDeferredDecorations() {
     try {
       await this.assets.load(DEFERRED_ASSETS);
@@ -787,7 +1005,21 @@ export class Game {
       this.velocity.z = THREE.MathUtils.lerp(this.velocity.z, targetZ, response);
     }
     if (this.jumpBuffer > 0 && this.coyoteTime > 0) {
-      this.velocity.y = PHYSICS.jumpSpeed;
+      this.velocity.x += THREE.MathUtils.clamp(
+        this.supportVelocity.x,
+        -GAMEPLAY_SAFETY.maxInheritedHorizontalSpeed,
+        GAMEPLAY_SAFETY.maxInheritedHorizontalSpeed,
+      );
+      this.velocity.z += THREE.MathUtils.clamp(
+        this.supportVelocity.z,
+        -GAMEPLAY_SAFETY.maxInheritedHorizontalSpeed,
+        GAMEPLAY_SAFETY.maxInheritedHorizontalSpeed,
+      );
+      this.velocity.y = PHYSICS.jumpSpeed + THREE.MathUtils.clamp(
+        this.supportVelocity.y,
+        0,
+        GAMEPLAY_SAFETY.maxInheritedRiseSpeed,
+      );
       this.grounded = false;
       this.groundedOn = undefined;
       this.coyoteTime = 0;
@@ -833,7 +1065,7 @@ export class Game {
     }
     this.updatePlayerAnimation(magnitude);
 
-    if (this.player.position.y < -12) {
+    if (this.player.position.y < this.fallResetY()) {
       this.beginRespawn('Mind the clouds!');
       return;
     }
@@ -894,6 +1126,8 @@ export class Game {
   }
 
   private advanceWorld(delta: number, carryPlayer: boolean) {
+    if (carryPlayer) this.supportVelocity.set(0, 0, 0);
+    this.updateGateMechanism(delta);
     for (const platform of this.movingPlatforms) {
       const moving = platform.def.moving;
       if (!moving) continue;
@@ -903,6 +1137,7 @@ export class Game {
       if (carryPlayer && this.groundedOn === platform) {
         this.platformDelta.subVectors(platform.root.position, platform.previousPosition);
         this.player.position.add(this.platformDelta);
+        this.supportVelocity.copy(this.platformDelta).multiplyScalar(1 / Math.max(delta, .000001));
       }
     }
     this.coins.forEach(coin => {
@@ -918,7 +1153,11 @@ export class Game {
       rotator.root.rotation.y += delta * rotator.def.speed;
     });
     this.clockworkDecor.forEach((gear, index) => {
-      gear.rotation.z += delta * (index % 2 ? -.18 : .22);
+      const mechanism = this.gateMechanism;
+      const speed = mechanism?.gear === gear
+        ? mechanism.activated && !mechanism.opened ? 3.6 : mechanism.opened ? .38 : .1
+        : index % 2 ? -.18 : .22;
+      gear.rotation.z += delta * speed;
     });
     this.spikeTraps.forEach(trap => {
       const phase = (this.simulationTime + trap.phaseOffset) % SPIKE_CYCLE;
@@ -938,11 +1177,7 @@ export class Game {
       trap.warning.scale.setScalar(1 + exposure * .08);
     });
     this.actMarkers.forEach(marker => {
-      marker.crystal.rotation.y += delta * 1.7;
-      marker.crystal.position.y = marker.baseY + Math.sin(this.simulationTime * 2.4 + marker.phase) * .08;
-      marker.ring.position.y = marker.crystal.position.y;
-      marker.ring.rotation.z += delta * .8;
-      marker.ring.material.opacity = .38 + Math.sin(this.simulationTime * 2.4 + marker.phase) * .1;
+      marker.material.emissiveIntensity = .42 + Math.sin(this.simulationTime * 2.1 + marker.phase) * .12;
     });
     const finishStar = this.scene.getObjectByName('finish-star');
     if (finishStar) finishStar.rotation.y += delta * 2;
@@ -983,6 +1218,13 @@ export class Game {
       coin.object.visible = false;
       this.audio.play('coin');
       this.haptic(6);
+    }
+
+    const gate = this.gateMechanism;
+    if (gate && !gate.activated
+      && this.horizontalDistance(this.player.position, gate.lever.position) < gate.def.triggerRadius
+      && Math.abs(this.player.position.y - gate.lever.position.y) < 2.2) {
+      this.activateGateMechanism();
     }
 
     const launcher = levelData.launchers.find(definition => (
@@ -1032,7 +1274,8 @@ export class Game {
             rotator.root.position.y,
             rotator.root.position.z + directionZ * rotator.def.radius,
           );
-          if (this.pointToSegmentDistanceXZ(this.player.position, start, end) < PHYSICS.playerRadius + .36) return true;
+          if (this.pointToSegmentDistanceXZ(this.player.position, start, end)
+            < PHYSICS.playerRadius + GAMEPLAY_SAFETY.rotatorHitPadding) return true;
         }
         return false;
       });
@@ -1043,7 +1286,9 @@ export class Game {
     }
 
     levelData.checkpoints.forEach((checkpoint, index) => {
-      if (this.activatedCheckpoints.has(index) || this.horizontalDistance(this.player.position, v(checkpoint.pos)) >= 1.8) return;
+      if (this.activatedCheckpoints.has(index)
+        || this.horizontalDistance(this.player.position, v(checkpoint.pos)) >= 1.8
+        || Math.abs(this.player.position.y - checkpoint.pos[1]) >= 2.2) return;
       this.activatedCheckpoints.add(index);
       this.respawn.copy(v(checkpoint.respawn));
       const visual = this.checkpointVisuals[index];
@@ -1063,10 +1308,45 @@ export class Game {
       && Math.abs(this.player.position.y - finish.y) < 3) this.finish();
   }
 
+  private activateGateMechanism() {
+    const gate = this.gateMechanism;
+    if (!gate || gate.activated) return;
+    gate.activated = true;
+    gate.leverAction?.reset().play();
+    gate.prompt.material.color.setHex(0x55f29a);
+    this.audio.play('check');
+    this.haptic([12, 25, 12]);
+    this.burst(gate.lever.position.clone().add(new THREE.Vector3(0, 1, 0)), 0xffc45b, 12, 2.8);
+    this.ui.toast('Clockwork gate opening!');
+  }
+
+  private updateGateMechanism(delta: number) {
+    const gate = this.gateMechanism;
+    if (!gate) return;
+    gate.leverMixer?.update(delta);
+    const pulse = .9 + Math.sin(this.simulationTime * 4) * .08;
+    gate.prompt.scale.setScalar(pulse);
+    if (!gate.activated) {
+      gate.prompt.material.opacity = .5 + Math.sin(this.simulationTime * 4) * .12;
+      return;
+    }
+    gate.progress = Math.min(1, gate.progress + delta / gate.def.openDuration);
+    const eased = THREE.MathUtils.smoothstep(gate.progress, 0, 1);
+    const rise = gate.def.openHeight * eased;
+    gate.doorLeaf.position.y = gate.doorLeafBaseY + rise / Math.max(gate.door.scale.y, .001);
+    gate.collider.root.position.y = gate.colliderBaseY + rise;
+    gate.prompt.material.opacity = Math.max(0, .7 * (1 - gate.progress));
+    if (gate.progress < 1 || gate.opened) return;
+    gate.opened = true;
+    gate.prompt.visible = false;
+    this.burst(gate.door.position.clone().add(new THREE.Vector3(0, 2.4, 0)), 0x55f29a, 15, 3.1);
+    this.ui.toast('Gate unlocked!');
+  }
+
   private updateCamera(delta: number) {
     const fast = this.dashTime > 0;
     const airborne = !this.grounded;
-    const camera = levelData.camera ?? { height: 6.35, distance: 9.3, lookAhead: 6.15, focusHeight: 1.2 };
+    const camera = this.cameraSettings();
     const targetFov = fast ? 63 : airborne ? 59 : 56;
     this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, 1 - Math.exp(-7 * delta));
     this.camera.updateProjectionMatrix();
@@ -1230,15 +1510,19 @@ export class Game {
 
   private placeRespawn() {
     this.player.position.copy(this.respawn);
+    this.player.rotation.y = Math.PI;
     this.velocity.set(0, 0, 0);
+    this.supportVelocity.set(0, 0, 0);
     this.grounded = false;
     this.groundedOn = undefined;
     this.dashTime = 0;
     this.bounceAssistTime = 0;
     this.coyoteTime = 0;
     this.jumpBuffer = 0;
-    this.resetGrace = .4;
+    this.cameraKick = 0;
+    this.resetGrace = GAMEPLAY_SAFETY.respawnGrace;
     this.respawnPlaced = true;
+    this.snapCameraToPlayer();
   }
 
   private finish() {
@@ -1278,6 +1562,21 @@ export class Game {
 
   private horizontalDistance(a: THREE.Vector3, b: THREE.Vector3) {
     return Math.hypot(a.x - b.x, a.z - b.z);
+  }
+
+  private cameraSettings() {
+    return levelData.camera ?? { height: 6.35, distance: 9.3, lookAhead: 6.15, focusHeight: 1.2 };
+  }
+
+  private snapCameraToPlayer() {
+    const camera = this.cameraSettings();
+    this.camera.position.copy(this.player.position).add(new THREE.Vector3(0, camera.height, camera.distance));
+    this.cameraFocus.copy(this.player.position).add(new THREE.Vector3(0, camera.focusHeight, -camera.lookAhead));
+    this.camera.lookAt(this.cameraFocus);
+  }
+
+  private fallResetY() {
+    return fallResetY(this.respawn.y);
   }
 
   private pointToSegmentDistanceXZ(point: THREE.Vector3, start: THREE.Vector3, end: THREE.Vector3) {
