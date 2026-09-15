@@ -20,6 +20,7 @@ export class UIManager {
         <button id="dash" aria-label="Dash">DASH</button>
         <button id="jump" aria-label="Jump">JUMP</button>
       </div>
+      <div id="dash-meter" aria-label="Dash cooldown"><span>SHIFT</span><div><i></i></div></div>
       <div id="hint"></div><div id="toast"></div><div id="respawn"><b></b></div>
       <div id="complete"><div class="card">
         <small class="result-kicker">LEVEL ${levelData.number} COMPLETE</small>
@@ -34,9 +35,15 @@ export class UIManager {
     document.querySelector('#counter')!.textContent = `${coins} / ${levelData.coins.length} 🪙`;
     document.querySelector('#falls')!.textContent = `${falls} fall${falls === 1 ? '' : 's'}`;
     document.querySelector<HTMLElement>('.progress i')!.style.width = `${Math.round(progress * 100)}%`;
+    const clampedDash = Math.max(0, Math.min(1, dashReady));
     document.querySelector<HTMLElement>('#dash')!.style.setProperty(
-      '--dash-ready', `${Math.max(0, Math.min(1, dashReady)) * 360}deg`,
+      '--dash-ready', `${clampedDash * 360}deg`,
     );
+    const dashMeter = document.querySelector<HTMLElement>('#dash-meter');
+    if (dashMeter) {
+      dashMeter.querySelector<HTMLElement>('i')!.style.width = `${Math.round(clampedDash * 100)}%`;
+      dashMeter.classList.toggle('ready', clampedDash >= 1);
+    }
     const act = Math.max(0, Math.min(levelData.acts.length - 1, actIndex));
     document.querySelector('#section-label')!.textContent = `ACT ${['I', 'II', 'III'][act]} · ${levelData.acts[act].name.toUpperCase()}`;
   }

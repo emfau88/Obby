@@ -112,10 +112,49 @@ button { font: inherit; color: white; border: 0; cursor: pointer; -webkit-tap-hi
   font-size: 18px;
 }
 .actions button:active { transform: translateY(5px); box-shadow: 0 2px 0 #173f7b; }
-#hud, #joystick, .actions { transition: opacity .35s, transform .35s; }
+
+/* Desktop dash cooldown meter — only shown when touch controls are hidden */
+#dash-meter {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: max(20px, env(safe-area-inset-bottom));
+  display: none;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 1.6px;
+  color: #ffffffd9;
+  text-shadow: 0 1px 3px #17334b88;
+}
+#dash-meter > div {
+  width: 130px;
+  height: 7px;
+  border-radius: 99px;
+  background: #17334b55;
+  overflow: hidden;
+  box-shadow: inset 0 1px 2px #0004;
+}
+#dash-meter i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #28b8ff, #7fe7ff);
+}
+#dash-meter.ready > div { box-shadow: 0 0 10px #28b8ffaa; }
+
+@media (pointer: fine) {
+  #dash-meter { display: flex; }
+  #joystick, .actions { display: none; }
+}
+#hud, #joystick, .actions, #dash-meter { transition: opacity .35s, transform .35s; }
 .cinematic #hud { opacity: 0; transform: translateY(-12px); }
 .cinematic #joystick { opacity: 0; transform: translateY(18px); }
 .cinematic .actions { opacity: 0; transform: translateY(18px); pointer-events: none; }
+.cinematic #dash-meter { opacity: 0; transform: translate(-50%, 18px); }
 .cinematic #hint, .cinematic #toast { opacity: 0; }
 
 #toast, #hint {

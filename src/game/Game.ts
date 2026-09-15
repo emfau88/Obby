@@ -34,10 +34,6 @@ type SpikeTrap = {
   exposure: number;
   warning: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
 };
-type ActMarkerVisual = {
-  material: THREE.MeshStandardMaterial;
-  phase: number;
-};
 type GateMechanism = {
   def: GateMechanismDef;
   door: THREE.Object3D;
@@ -60,6 +56,7 @@ const DEFERRED_ASSETS: AssetId[] = ['tower', 'chest'];
 const SPIKE_CYCLE = 3.4;
 const SPIKE_DANGER_THRESHOLD = .7;
 const v = (position: Vec3) => new THREE.Vector3(...position);
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
 export class Game {
   private scene = new THREE.Scene();
@@ -90,12 +87,13 @@ export class Game {
   private spikeTraps: SpikeTrap[] = [];
   private rotators: RotatingHazard[] = [];
   private clockworkDecor: THREE.Object3D[] = [];
-  private actMarkers: ActMarkerVisual[] = [];
+  private seaClouds: Array<{ object: THREE.Object3D; baseX: number; phase: number; speed: number }> = [];
   private gateMechanism?: GateMechanism;
   private respawn = v(levelData.start);
   private grounded = false;
   private dashCooldown = 0;
   private dashTime = 0;
+  private dashBuffer = 0;
   private dashDirection = new THREE.Vector3(0, 0, -1);
   private bounceAssistTime = 0;
   private bounceVelocity = new THREE.Vector3();
@@ -104,6 +102,10 @@ export class Game {
   private landingSquash = 0;
   private landingAnimationTime = 0;
   private cameraKick = 0;
+  private lookYaw = 0;
+  private lookPitch = 0;
+  private lookDragging = false;
+  private lookSpherical = new THREE.Spherical();
   private activatedCheckpoints = new Set<number>();
   private checkpointVisuals: CheckpointVisual[] = [];
   private activatedTutorials = new Set<string>();
@@ -139,6 +141,7 @@ export class Game {
     this.renderer.domElement.setAttribute('aria-label', 'Cloudtop Castle Run game canvas');
     root.prepend(this.renderer.domElement);
     this.input = new InputManager();
+    this.setupMouseLook();
     if (import.meta.env.DEV) {
       this.debugOutput = document.createElement('output');
       this.debugOutput.id = 'game-debug';
@@ -188,6 +191,30 @@ export class Game {
     };
   }
 
+  private setupMouseLook() {
+    if (!matchMedia('(pointer: fine)').matches) return;
+    const canvas = this.renderer.domElement;
+    canvas.style.cursor = 'grab';
+    canvas.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || this.done) return;
+      this.lookDragging = true;
+      canvas.setPointerCapture(event.pointerId);
+      canvas.style.cursor = 'grabbing';
+    });
+    canvas.addEventListener('pointermove', event => {
+      if (!this.lookDragging) return;
+      this.lookYaw = THREE.MathUtils.clamp(this.lookYaw - event.movementX * .0042, -2.4, 2.4);
+      this.lookPitch = THREE.MathUtils.clamp(this.lookPitch + event.movementY * .003, -.55, .5);
+    });
+    const release = (event: PointerEvent) => {
+      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+      this.lookDragging = false;
+      canvas.style.cursor = 'grab';
+    };
+    canvas.addEventListener('pointerup', release);
+    canvas.addEventListener('pointercancel', release);
+  }
+
   private consumeDebugCommand() {
     const command = this.debugCommand?.value;
     if (!command || !this.debugCommand) return;
@@ -219,7 +246,7 @@ export class Game {
       loading.remove();
       this.clock.start();
       const mobile = matchMedia('(pointer: coarse)').matches;
-      this.ui.hint(mobile ? 'Drag the joystick to move' : 'Move with WASD or arrow keys', 2800);
+      this.ui.hint(mobile ? 'Drag the joystick to move' : 'WASD / arrows to move · SPACE jump · SHIFT dash · hold LMB to look', 4000);
       this.loop();
       void this.loadDeferredDecorations();
     } catch (error) {
@@ -387,16 +414,6 @@ export class Game {
   }
 
   private createActLandmarks() {
-    if (levelData.id !== 'sunset-spires') {
-      levelData.acts.slice(1).forEach(act => {
-        if (!act.gate) return;
-        this.createActMarker(
-          new THREE.Vector3(act.gate.x ?? 0, act.gate.y, act.gate.z),
-          act.gate.width,
-          act.color,
-        );
-      });
-    }
     const bonusMaterial = new THREE.MeshStandardMaterial({
       color: 0xffd52a, emissive: 0xa95e00, emissiveIntensity: .55, roughness: .45,
     });
@@ -409,60 +426,6 @@ export class Game {
       crystal.castShadow = true;
       this.scene.add(crystal);
     });
-  }
-
-  private createActMarker(position: THREE.Vector3, width: number, color: number) {
-    const root = new THREE.Group();
-    root.position.copy(position);
-    root.name = 'act-marker';
-    const stoneMaterial = new THREE.MeshStandardMaterial({
-      color: levelData.id === 'sunset-spires' ? 0x725469 : 0xe9f2e2,
-      roughness: .76,
-      metalness: levelData.id === 'sunset-spires' ? .12 : .02,
-    });
-    const accentMaterial = new THREE.MeshStandardMaterial({
-      color, emissive: color, emissiveIntensity: .5, roughness: .26, metalness: .28,
-    });
-    const pillarHeight = 3.15;
-    for (const side of [-1, 1]) {
-      const pillar = new THREE.Mesh(new THREE.BoxGeometry(.82, pillarHeight, .82), stoneMaterial);
-      pillar.position.set(side * width / 2, pillarHeight / 2, 0);
-      const foot = new THREE.Mesh(new THREE.BoxGeometry(1.16, .28, 1.16), stoneMaterial);
-      foot.position.set(side * width / 2, .14, 0);
-      const cap = new THREE.Mesh(new THREE.BoxGeometry(1.08, .3, 1.02), stoneMaterial);
-      cap.position.set(side * width / 2, pillarHeight - .15, 0);
-      const band = new THREE.Mesh(new THREE.BoxGeometry(.9, .14, .88), accentMaterial);
-      band.position.set(side * width / 2, 2.35, .02);
-      pillar.castShadow = foot.castShadow = cap.castShadow = band.castShadow = true;
-      pillar.receiveShadow = foot.receiveShadow = true;
-      root.add(pillar, foot, cap, band);
-      const colliderRoot = new THREE.Group();
-      colliderRoot.position.set(
-        position.x + side * width / 2,
-        position.y + pillarHeight / 2,
-        position.z,
-      );
-      const collider: Platform = {
-        root: colliderRoot,
-        def: {
-          id: `act-portal-${Math.abs(Math.round(position.z))}-${side < 0 ? 'left' : 'right'}`,
-          size: [.82, pillarHeight, .82],
-        },
-        basePosition: colliderRoot.position.clone(),
-        previousPosition: colliderRoot.position.clone(),
-      };
-      this.platforms.push(collider);
-      this.scene.add(colliderRoot);
-    }
-    const lintel = new THREE.Mesh(new THREE.BoxGeometry(width + 1.4, .62, .92), stoneMaterial);
-    lintel.position.y = pillarHeight + .16;
-    const inset = new THREE.Mesh(new THREE.BoxGeometry(width * .48, .13, .08), accentMaterial);
-    inset.position.set(0, pillarHeight + .17, .5);
-    lintel.castShadow = true;
-    lintel.receiveShadow = true;
-    root.add(lintel, inset);
-    this.actMarkers.push({ material: accentMaterial, phase: position.z * .08 });
-    this.scene.add(root);
   }
 
   private createPlayer() {
@@ -651,8 +614,121 @@ export class Game {
     }
     if (levelData.id === 'sunset-spires') {
       this.createCitadelScenery();
-      this.createGateMechanism();
+    } else {
+      this.createGardenScenery();
     }
+    this.createGateMechanism();
+  }
+
+  private createGardenScenery() {
+    const sky = new THREE.Mesh(
+      new THREE.SphereGeometry(300, 24, 14),
+      new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        depthWrite: false,
+        fog: false,
+        uniforms: {
+          topColor: { value: new THREE.Color(0x3ea6ec) },
+          horizonColor: { value: new THREE.Color(0xeaf7ff) },
+          lowerColor: { value: new THREE.Color(0x8fd0f2) },
+        },
+        vertexShader: `
+          varying vec3 vDirection;
+          void main() {
+            vDirection = normalize(position);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }`,
+        fragmentShader: `
+          uniform vec3 topColor;
+          uniform vec3 horizonColor;
+          uniform vec3 lowerColor;
+          varying vec3 vDirection;
+          void main() {
+            float h = vDirection.y;
+            vec3 color = h >= 0.0
+              ? mix(horizonColor, topColor, pow(min(h * 1.6, 1.0), 0.7))
+              : mix(horizonColor, lowerColor, min(-h * 2.2, 1.0));
+            gl_FragColor = vec4(color, 1.0);
+          }`,
+      }),
+    );
+    sky.name = 'sky-dome';
+    this.scene.add(sky);
+
+    const sunDisc = new THREE.Mesh(
+      new THREE.CircleGeometry(13, 32),
+      new THREE.MeshBasicMaterial({ color: 0xfff8dd, fog: false }),
+    );
+    sunDisc.position.set(-78, 62, -252);
+    sunDisc.lookAt(0, 8, 0);
+    const sunHalo = new THREE.Mesh(
+      new THREE.CircleGeometry(26, 32),
+      new THREE.MeshBasicMaterial({ color: 0xfff2c4, transparent: true, opacity: .3, fog: false, blending: THREE.AdditiveBlending, depthWrite: false }),
+    );
+    sunHalo.position.copy(sunDisc.position);
+    sunHalo.lookAt(0, 8, 0);
+    this.scene.add(sunHalo, sunDisc);
+
+    const cloudIds: AssetId[] = ['cloud1', 'cloud2', 'cloud3'];
+    for (let index = 0; index < 26; index++) {
+      const cloud = this.assets.create(cloudIds[index % cloudIds.length], {
+        height: 4.5 + (index % 4) * 1.3, castShadow: false, receiveShadow: false,
+      });
+      const side = index % 2 ? 1 : -1;
+      const baseX = side * (26 + (index * 17) % 70);
+      cloud.position.set(baseX, -8.5 - (index % 3) * 1.9, 20 - index * 9.3);
+      cloud.rotation.y = index * .61;
+      this.scene.add(cloud);
+      this.seaClouds.push({ object: cloud, baseX, phase: index * .7, speed: .05 + (index % 5) * .012 });
+    }
+    for (let index = 0; index < 8; index++) {
+      const cloud = this.assets.create(cloudIds[index % cloudIds.length], {
+        height: 5.5 + (index % 3), castShadow: false, receiveShadow: false,
+      });
+      const baseX = -18 + (index * 9) % 36;
+      cloud.position.set(baseX, -11 - (index % 2) * 2.2, -12 - index * 26);
+      cloud.rotation.y = index * 1.1;
+      this.scene.add(cloud);
+      this.seaClouds.push({ object: cloud, baseX, phase: index * .9 + 3, speed: .04 + (index % 3) * .01 });
+    }
+
+    if (levelData.gateMechanism) {
+      const gearRoot = new THREE.Group();
+      gearRoot.position.copy(v(levelData.gateMechanism.gear));
+      gearRoot.rotation.y = .18;
+      const brass = new THREE.MeshStandardMaterial({
+        color: 0xc9974f, emissive: 0x4a2f0a, emissiveIntensity: .22, roughness: .42, metalness: .36,
+      });
+      gearRoot.add(new THREE.Mesh(new THREE.TorusGeometry(1.5, .2, 8, 24), brass));
+      for (let tooth = 0; tooth < 10; tooth++) {
+        const angle = tooth / 10 * Math.PI * 2;
+        const block = new THREE.Mesh(new THREE.BoxGeometry(.34, .5, .3), brass);
+        block.position.set(Math.cos(angle) * 1.72, Math.sin(angle) * 1.72, 0);
+        block.rotation.z = angle;
+        gearRoot.add(block);
+      }
+      this.clockworkDecor.push(gearRoot);
+      this.scene.add(gearRoot);
+    }
+
+    const supportMaterial = new THREE.MeshStandardMaterial({ color: 0x8a6b45, roughness: .9, metalness: .02 });
+    levelData.platforms.filter(platform => (
+      platform.visual === 'grass' && !platform.moving && platform.size[0] >= 10
+    )).forEach(platform => {
+      const height = Math.min(7.5, 2.6 + platform.pos[1] * .3);
+      const support = new THREE.Mesh(
+        new THREE.CylinderGeometry(platform.size[0] * .22, platform.size[0] * .37, height, 7),
+        supportMaterial,
+      );
+      support.position.set(
+        platform.pos[0],
+        platform.pos[1] - platform.size[1] / 2 - height / 2 + .2,
+        platform.pos[2],
+      );
+      support.castShadow = true;
+      support.receiveShadow = true;
+      this.scene.add(support);
+    });
   }
 
   private createCitadelScenery() {
@@ -794,11 +870,18 @@ export class Game {
     };
     this.platforms.push(collider);
 
+    const isSunset = levelData.id === 'sunset-spires';
     const wallMaterial = new THREE.MeshStandardMaterial({
-      color: 0x725469, roughness: .76, metalness: .12,
+      color: isSunset ? 0x725469 : 0xb3a184,
+      roughness: isSunset ? .76 : .82,
+      metalness: .08,
     });
     const wallTrimMaterial = new THREE.MeshStandardMaterial({
-      color: 0xe0a04b, emissive: 0x7d351f, emissiveIntensity: .24, roughness: .42, metalness: .34,
+      color: isSunset ? 0xe0a04b : 0x5f4c39,
+      emissive: isSunset ? 0x7d351f : 0x1d130a,
+      emissiveIntensity: isSunset ? .24 : .12,
+      roughness: .46,
+      metalness: isSunset ? .34 : .22,
     });
     const wallHeight = def.door.height;
     const portalLeft = def.portalCenterX - def.portalWidth / 2;
@@ -981,7 +1064,9 @@ export class Game {
     const targetX = move.x / length * PHYSICS.moveSpeed * magnitude;
     const targetZ = -move.y / length * PHYSICS.moveSpeed * magnitude;
 
-    if (pressed.dash && this.dashCooldown <= 0) {
+    this.dashBuffer = pressed.dash ? .14 : Math.max(0, this.dashBuffer - delta);
+    if (this.dashBuffer > 0 && this.dashCooldown <= 0) {
+      this.dashBuffer = 0;
       this.dashDirection.set(targetX, 0, targetZ);
       if (this.dashDirection.lengthSq() < 1) {
         this.dashDirection.set(Math.sin(this.player.rotation.y), 0, Math.cos(this.player.rotation.y));
@@ -1176,9 +1261,6 @@ export class Game {
       trap.warning.material.opacity = warningPulse + exposure * .28;
       trap.warning.scale.setScalar(1 + exposure * .08);
     });
-    this.actMarkers.forEach(marker => {
-      marker.material.emissiveIntensity = .42 + Math.sin(this.simulationTime * 2.1 + marker.phase) * .12;
-    });
     const finishStar = this.scene.getObjectByName('finish-star');
     if (finishStar) finishStar.rotation.y += delta * 2;
     this.checkpointVisuals.forEach((checkpoint, index) => {
@@ -1191,6 +1273,10 @@ export class Game {
       beacon.rotation.y += delta * (1.4 + index * .2);
       beacon.position.y = beacon.userData.baseY + Math.sin(this.simulationTime * 2.3 + index) * .16;
     });
+    for (const seaCloud of this.seaClouds) {
+      seaCloud.object.position.x = seaCloud.baseX
+        + Math.sin(this.simulationTime * seaCloud.speed * 6 + seaCloud.phase) * 5;
+    }
     for (let index = this.particles.length - 1; index >= 0; index--) {
       const particle = this.particles[index];
       particle.life -= delta;
@@ -1353,17 +1439,31 @@ export class Game {
     this.cameraKick = Math.max(0, this.cameraKick - delta * 1.7);
     const verticalLead = THREE.MathUtils.clamp(this.velocity.y * .055, -.45, 1.05);
     const forwardLead = camera.lookAhead + THREE.MathUtils.clamp(-this.velocity.z * .24, 0, 2.2);
+    if (!this.lookDragging) {
+      const settle = Math.exp(-3.4 * delta);
+      this.lookYaw *= settle;
+      this.lookPitch *= settle;
+    }
+    const lookForward = new THREE.Vector3(0, 0, -forwardLead);
+    if (this.lookYaw !== 0) lookForward.applyAxisAngle(Y_AXIS, this.lookYaw);
     const focus = this.player.position.clone().add(new THREE.Vector3(
-      this.velocity.x * .18,
+      this.velocity.x * .18 + lookForward.x,
       camera.focusHeight + verticalLead,
-      -forwardLead,
+      lookForward.z,
     ));
     this.cameraFocus.lerp(focus, 1 - Math.exp(-8 * delta));
-    const desired = this.player.position.clone().add(new THREE.Vector3(
+    const desiredOffset = new THREE.Vector3(
       -this.velocity.x * .07,
       camera.height + verticalLead - this.cameraKick,
       fast ? camera.distance + 1.2 : camera.distance,
-    ));
+    );
+    if (this.lookYaw !== 0 || this.lookPitch !== 0) {
+      this.lookSpherical.setFromVector3(desiredOffset);
+      this.lookSpherical.theta += this.lookYaw;
+      this.lookSpherical.phi = THREE.MathUtils.clamp(this.lookSpherical.phi - this.lookPitch, .35, 1.45);
+      desiredOffset.setFromSpherical(this.lookSpherical);
+    }
+    const desired = this.player.position.clone().add(desiredOffset);
     this.camera.position.lerp(desired, 1 - Math.exp(-7.5 * delta));
     this.camera.lookAt(this.cameraFocus);
 
@@ -1516,6 +1616,7 @@ export class Game {
     this.grounded = false;
     this.groundedOn = undefined;
     this.dashTime = 0;
+    this.dashBuffer = 0;
     this.bounceAssistTime = 0;
     this.coyoteTime = 0;
     this.jumpBuffer = 0;
